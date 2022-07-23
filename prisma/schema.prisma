@@ -16,7 +16,9 @@ model User {
   updatedAt    DateTime  @updatedAt
 
   email        String    @unique  
-  pwd          String
+  password     String
+  username     String?   @unique
+  avatar       String?
   tokens       Token[]  
 
   @@map("users")

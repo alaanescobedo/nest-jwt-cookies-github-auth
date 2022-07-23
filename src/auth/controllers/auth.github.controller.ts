@@ -1,19 +1,18 @@
-import { Controller, Get, HttpCode, HttpStatus, Req, Res, UseGuards } from '@nestjs/common';
+import { Controller, Get, HttpCode, HttpStatus, Res, UseGuards } from '@nestjs/common';
 import { Response } from 'express';
-import { AuthService } from '../services';
 import AUTH_CONFIG from '../config'
 import { Public } from '../decorators/public.decorator';
 import { CurrentUser } from '../decorators';
-import { UserAgent } from '../decorators/user-agent.decorator';
 import { GithubGuard } from '../guards/github.guard';
-import { Profile } from 'passport-github2';
-import { PrismaService } from '../services/prisma.service';
+import { User } from '@prisma/client';
+import { TokenService } from '../services/token.service';
+import { CurrentUserInfo } from '../decorators/current-user-info';
+import { UserInfo } from '../types';
 
 @Controller(AUTH_CONFIG.ROUTES.ROOT)
 export class AuthGithubController {
   constructor(
-    private readonly authService: AuthService,
-    private readonly prisma: PrismaService,
+    private readonly tokenService: TokenService,
   ) { }
 
   @Public()
@@ -24,30 +23,13 @@ export class AuthGithubController {
   @HttpCode(HttpStatus.CREATED)
   @UseGuards(GithubGuard)
   @Get(AUTH_CONFIG.ROUTES.GITHUB_CALLBACK)
-  async githubCallback(@CurrentUser() user: Profile, @UserAgent() agent: string, @Res() res: Response) {
-
-    const userExist = await this.prisma.user.findFirst({
-      where: {
-        email: user.emails[0].value
-      }
-    })
-    if (userExist) {
-      // TODO: Create a jwtauth Service to put this logic in
-      const tokens = this.authService.generateToken({
-        email: user.emails[0].value,
-        userId: userExist.id
-      })
-      await this.authService.storeRefreshToken(tokens.refreshToken, agent, userExist.id)
-      this.authService.saveTokenInCookie(res, tokens.accessToken)
-      return res.json({ access_token: tokens.accessToken })
-    }
-
-    return this.authService.localRegister({
-      email: user.emails[0].value,
-      password: user.id
-    },
-      agent,
-      res)
+  async githubCallback(@CurrentUser() user: User, @CurrentUserInfo() userInfo: UserInfo, @Res() res: Response) {
+    const tokens = await this.tokenService.generateToken({ email: user.email, userId: user.id })
+    await this.tokenService.storeRefreshToken({
+      value: tokens.refreshToken,
+      agent: userInfo.agent,
+      ownerId: user.id,
+    }, res)
+    return res.send({ access_token: tokens.accessToken })
   }
-
 }

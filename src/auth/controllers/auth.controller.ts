@@ -6,7 +6,10 @@ import { LoginDto, RegisterDto } from '../dtos';
 import { Public } from '../decorators/public.decorator';
 import { CurrentUser } from '../decorators';
 import { RTGuard } from '../guards';
-import { UserAgent } from '../decorators/user-agent.decorator';
+import { CurrentUserInfo } from '../decorators/current-user-info';
+import { userInfo } from 'os';
+import { UserInfo } from '../types';
+console.log('userInfo', userInfo);
 
 @Controller(AUTH_CONFIG.ROUTES.ROOT)
 export class AuthController {
@@ -15,15 +18,15 @@ export class AuthController {
   @Public()
   @HttpCode(HttpStatus.CREATED)
   @Post(AUTH_CONFIG.ROUTES.LOCAL_REGISTER)
-  async register(@Body() dto: RegisterDto, @UserAgent() agent: string, @Res() res: Response) {
-    return this.authService.localRegister(dto, agent, res);
+  async register(@Body() dto: RegisterDto, @CurrentUserInfo() userInfo: UserInfo, @Res() res: Response) {
+    return this.authService.register(dto, userInfo, res);
   }
 
   @Public()
   @HttpCode(HttpStatus.OK)
   @Post(AUTH_CONFIG.ROUTES.LOCAL_LOGIN)
-  async login(@Body() dto: LoginDto, @UserAgent() agent: string, @Res() res: Response) {
-    return this.authService.localLogin(dto, agent, res);
+  async login(@Body() dto: LoginDto, @Res() res: Response) {
+    return this.authService.localLogin(dto, res);
   }
 
   @Public()
@@ -31,7 +34,8 @@ export class AuthController {
   @UseGuards(RTGuard)
   @Post(AUTH_CONFIG.ROUTES.LOGOUT)
   async logout(@CurrentUser() user: any) {
-    return this.authService.logout({ rt: user['refreshToken'] });
+    console.log({ user });
+    return this.authService.logout({ value: user['refreshToken'] });
   }
 
   @Public()
@@ -39,6 +43,6 @@ export class AuthController {
   @UseGuards(RTGuard)
   @Post(AUTH_CONFIG.ROUTES.REFRESH)
   async refresh(@CurrentUser() user: any, @Res() res: Response) {
-    return this.authService.refresh({ rt: user['refreshToken'] }, res);
+    return this.authService.refresh({ value: user['refreshToken'] }, res);
   }
 }

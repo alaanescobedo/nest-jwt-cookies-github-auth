@@ -26,6 +26,15 @@
 
 [Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
 
+### TODO:
+- Add configuration to read from environment variables
+- Add Tests
+- Add feature to read ip of request
+- Notify the user when has been logged twice with the same agent
+- Add email verification
+- Add password reset
+
+
 ## Installation
 
 ```bash

@@ -1,164 +1,84 @@
-import { BadRequestException, ForbiddenException, Injectable } from '@nestjs/common';
-import { JwtService } from '@nestjs/jwt'
+import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import * as bcrypt from 'bcrypt'
 import { LoginDto, LogoutDto, RegisterDto } from '../dtos';
-import { PrismaService } from './prisma.service';
 import AUTH_CONFIG from '../config'
 import { Response } from 'express';
 import { RefreshTokenDto } from '../dtos/refresh-token.dto';
+import { ValidateUserDto } from '../dtos/validate-user.dto';
+import { UsersService } from 'src/users/services/users.service';
+import { TokenService } from './token.service';
+import { UserInfo } from '../types';
 
 @Injectable()
 export class AuthService {
   constructor(
-    private readonly prisma: PrismaService,
-    private readonly jwtService: JwtService
+    private readonly userService: UsersService,
+    private readonly tokenService: TokenService,
   ) { }
 
-  async localRegister(dto: RegisterDto, agent: string, res: Response) {
+  async register(dto: RegisterDto, userInfo: UserInfo, res: Response) {
 
-    const userExist = await this.prisma.user.findUnique({
-      where: {
-        email: dto.email
-      }
-    })
-    if (userExist) throw new BadRequestException(AUTH_CONFIG.ERRORS.USER_EXIST)
+    const user = await this.validateUser(dto)
+    if (user) throw new BadRequestException(AUTH_CONFIG.ERRORS.USER_EXIST)
 
-    const pwdHash = this.hashDataSync(dto.password)
+    const pwdHash = await this.hashData(dto.password)
+    const newUser = await this.userService.create({ email: dto.email, password: pwdHash })
 
-    const newUser = await this.prisma.user.create({
-      data: {
-        email: dto.email,
-        pwd: pwdHash
-      }
-    })
-
-    const tokens = this.generateToken({ email: newUser.email, userId: newUser.id })
-    await this.storeRefreshToken(tokens.refreshToken, agent, newUser.id)
-    this.saveTokenInCookie(res, tokens.refreshToken)
+    const tokens = await this.tokenService.generateToken({ email: newUser.email, userId: newUser.id })
+    await this.tokenService.storeRefreshToken({
+      value: tokens.refreshToken,
+      agent: userInfo?.agent,
+      ownerId: newUser.id,
+    }, res)
 
     return res.send({ access_token: tokens.accessToken })
   }
-  async localLogin(dto: LoginDto, agent: string, res: Response) {
+  async localLogin(dto: LoginDto, res: Response) {
 
-    const user = await this.prisma.user.findUnique({
-      where: {
-        email: dto.email
-      }
-    })
+    const user = await this.validateUser(dto)
     if (!user) throw new BadRequestException(AUTH_CONFIG.ERRORS.WRONG_CREDENTIALS)
 
-    const pwdMatch = this.compareDataSync(dto.password, user.pwd)
-    if (!pwdMatch) throw new BadRequestException(AUTH_CONFIG.ERRORS.WRONG_CREDENTIALS)
-
-    const tokens = this.generateToken({ email: user.email, userId: user.id })
-    await this.storeRefreshToken(tokens.refreshToken, agent, user.id)
-    this.saveTokenInCookie(res, tokens.refreshToken)
+    const tokens = await this.tokenService.generateToken({ email: user.email, userId: user.id })
+    await this.tokenService.storeRefreshToken({ value: tokens.refreshToken, ownerId: user.id }, res)
 
     return res.send({ access_token: tokens.accessToken })
   }
   async logout(dto: LogoutDto) {
-    const token = await this.prisma.token.findUnique({
-      where: {
-        value: dto.rt
-      }
-    })
+    const token = await this.tokenService.findOne(dto)
+    if (!token) throw new ForbiddenException(AUTH_CONFIG.ERRORS.UNAUTHORIZED)
 
-    if(!token) throw new ForbiddenException(AUTH_CONFIG.ERRORS.UNAUTHORIZED)
-    
-    await this.prisma.token.update({
-      where: {
-        value: dto.rt
-      },
-      data: {
-        value: null,
-      }
-    })
+    await this.tokenService.updateOne({ id: token.id, value: null })
   }
   async refresh(dto: RefreshTokenDto, res: Response) {
-    const token = await this.prisma.token.findUnique({
-      where: {
-        value: dto.rt
-      }
-    })
+    const token = await this.tokenService.findOne(dto)
     if (!token) throw new ForbiddenException(AUTH_CONFIG.ERRORS.UNAUTHORIZED)
-    const user = await this.prisma.user.findUnique({
-      where: {
-        id: token.ownerId
-      }
-    })
+    const user = await this.userService.findOneById(token.ownerId)
+    if (!user) throw new NotFoundException(AUTH_CONFIG.ERRORS.USER_NOT_FOUND)
 
-    const tokens = this.generateToken({ userId: user.id, email: user.email })
-    await this.storeRefreshToken(tokens.refreshToken, token.agent, user.id)
-    this.saveTokenInCookie(res, tokens.refreshToken)
+    const tokens = await this.tokenService.generateToken({ email: user.email, userId: user.id })
+    await this.tokenService.storeRefreshToken({
+      value: tokens.refreshToken,
+      agent: token.agent,
+      ownerId: user.id,
+    }, res)
+
     return res.send({ access_token: tokens.accessToken })
   }
 
+  async validateUser(dto: ValidateUserDto) {
+    const user = await this.userService.findOne(dto);
+    if (!user) return null
 
-  async storeRefreshToken(refreshToken: string, agent: string, userId: string) {
-    const tokenFinded = await this.prisma.token.findFirst({
-      where: {
-        agent,
-        ownerId: userId,
-      }
-    })
-    if (tokenFinded) {
-      return this.prisma.token.update({
-        where: {
-          id: tokenFinded.id
-        },
-        data: {
-          value: refreshToken,
-        }
-      })
-    }
+    const pwdMatch = await this.compareData(dto.password, user.password);
+    if (!pwdMatch) return null
 
-    await this.prisma.token.create({
-      data: {
-        value: refreshToken,
-        agent,
-        owner: {
-          connect: {
-            id: userId
-          }
-        }
-      }
-    })
+    return user;
   }
-  generateToken(args: { userId: string, email: string }) {
-    const accessToken = this.jwtService.sign({
-      sub: args.userId,
-      email: args.email
-    }, {
-      secret: AUTH_CONFIG.STRATEGIES.JWT_AT.SECRET_OR_KEY,
-      expiresIn: AUTH_CONFIG.STRATEGIES.JWT_AT.EXPIRES_IN
-    })
-
-    const refreshToken = this.jwtService.sign({
-      sub: args.userId,
-    }, {
-      secret: AUTH_CONFIG.STRATEGIES.JWT_RT.SECRET_OR_KEY,
-      expiresIn: AUTH_CONFIG.STRATEGIES.JWT_RT.EXPIRES_IN
-    })
-
-    return { accessToken, refreshToken }
+  async hashData(data: string) {
+    const salt = await bcrypt.genSalt(AUTH_CONFIG.CRYPT.SALT_ROUNDS);
+    return await bcrypt.hash(data, salt)
   }
-  saveTokenInCookie(res: Response, refreshToken: string) {
-    res.cookie('refresh_token', refreshToken, {
-      expires: new Date(Date.now() + 1000 * 60 * 60 * 24 * 7),
-      // httpOnly: true,
-      // signed: true,
-      // maxAge: 1000 * 60 * 60 * 24 * 7,
-      // sameSite: 'lax',
-      // secure: false
-    })
-  }
-  hashDataSync(data: string) {
-    return bcrypt.hashSync(data, 10)
-  }
-  compareDataSync(data: string, encrypt: string) {
-    return bcrypt.compareSync(data, encrypt)
-  }
-  validateToken(token: string, secret: string) {
-    return this.jwtService.verify(token, { secret })
+  async compareData(data: string, encrypt: string) {
+    return await bcrypt.compare(data, encrypt)
   }
 }
